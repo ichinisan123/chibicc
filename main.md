@@ -1,4 +1,14 @@
-This is an excellent piece of `chibicc` to study because **`main()` is essentially the compiler driver's control center**.
+[About main method](#about-main-method)
+
+[What is AST?](#what-is-ast)
+
+[what is atexit()](#what-is-atexit)
+
+---
+
+## About main method
+
+**`main()` is essentially the compiler driver's control center**.
 
 One important point first:
 
@@ -8,31 +18,31 @@ One important point first:
 A useful mental model is:
 
 ```text
-                 chibicc driver
-                      │
-                      ▼
-                  parse_args()
-                      │
-             ┌────────┴────────┐
-             │                 │
-          cc1 mode          normal mode
-             │                 │
-             ▼                 ▼
-           cc1()        inspect input files
-                               │
-          ┌────────────────────┼────────────────────┐
-          ▼                    ▼                    ▼
-      preprocess             compile             link
-          │                    │                    │
-          ▼                    ▼                    ▼
-       output               .s / .o             executable
+           chibicc driver
+                │
+                ▼
+            parse_args()
+                │
+       ┌────────┴────────┐
+       │                 │
+    cc1 mode          normal mode
+       │                 │
+       ▼                 ▼
+     cc1()        inspect input files
+                         │
+    ┌────────────────────┼────────────────────┐
+    ▼                    ▼                    ▼
+preprocess             compile             link
+    │                    │                    │
+    ▼                    ▼                    ▼
+ output               .s / .o             executable
 ```
 
 Let's go through the code carefully.
 
 ---
 
-# 1. Function signature
+### 1. Function signature
 
 ```c
 int main(int argc, char** argv) {
@@ -73,7 +83,7 @@ So `main()` receives the command-line arguments.
 
 ---
 
-# 2. Register cleanup function
+### 2. Register cleanup function
 
 ```c
 atexit(cleanup);
@@ -130,7 +140,7 @@ Then normal termination automatically invokes it.
 
 ---
 
-# 3. Initialize macros
+### 3. Initialize macros
 
 ```c
 init_macros();
@@ -154,20 +164,20 @@ So conceptually:
 
 ```text
 init_macros()
-      │
-      ▼
+   │
+   ▼
 Initialize preprocessor state
-      │
-      ├── predefined macros
-      ├── compiler-specific macros
-      └── target-specific macros
+   │
+   ├── predefined macros
+   ├── compiler-specific macros
+   └── target-specific macros
 ```
 
 This is part of the preprocessing infrastructure.
 
 ---
 
-# 4. Parse command-line arguments
+### 4. Parse command-line arguments
 
 ```c
 parse_args(argc, argv);
@@ -256,7 +266,7 @@ as:
 
 ---
 
-# 5. Special `cc1` mode
+### 5. Special `cc1` mode
 
 ```c
 if (opt_cc1) {
@@ -268,22 +278,22 @@ if (opt_cc1) {
 
 This is an important compiler architecture concept.
 
-## What is `cc1`?
+#### What is `cc1`?
 
 You can think of chibicc as having two levels:
 
 ```text
-                  chibicc
-                     │
-          ┌──────────┴──────────┐
-          │                     │
-       driver                  cc1
-          │                     │
-          │             actual compilation
-          │                     │
-          ▼                     ▼
-     command-line          lexer/parser/
-       handling             codegen
+             chibicc
+                │
+     ┌──────────┴──────────┐
+     │                     │
+  driver                  cc1
+     │                     │
+     │             actual compilation
+     │                     │
+     ▼                     ▼
+command-line          lexer/parser/
+  handling             codegen
 ```
 
 The **driver** decides:
@@ -299,7 +309,7 @@ The `cc1` part performs the actual compilation.
 
 ---
 
-## `opt_cc1`
+#### `opt_cc1`
 
 ```c
 if (opt_cc1)
@@ -335,14 +345,14 @@ So:
 
 ```text
 opt_cc1 == true
-       │
-       ▼
+     │
+     ▼
 add include paths
-       │
-       ▼
+     │
+     ▼
 cc1()
-       │
-       ▼
+     │
+68     ▼
 return
 ```
 
@@ -350,7 +360,7 @@ This is similar conceptually to how GCC historically separates its driver functi
 
 ---
 
-# 6. Check invalid `-o` usage
+### 6. Check invalid `-o` usage
 
 ```c
 if (input_paths.len > 1 && opt_o && (opt_c || opt_S | opt_E))
@@ -361,7 +371,7 @@ This checks for an invalid command-line combination.
 
 There are three conditions.
 
-### Condition 1
+#### Condition 1
 
 ```c
 input_paths.len > 1
@@ -375,7 +385,7 @@ For example:
 chibicc a.c b.c
 ```
 
-### Condition 2
+#### Condition 2
 
 ```c
 opt_o
@@ -387,7 +397,7 @@ The user specified an output filename:
 -o something
 ```
 
-### Condition 3
+#### Condition 3
 
 ```c
 opt_c || opt_S | opt_E
@@ -436,7 +446,7 @@ Therefore chibicc rejects it.
 
 ---
 
-# 7. Create linker argument array
+### 7. Create linker argument array
 
 ```c
 StringArray ld_args = {};
@@ -480,7 +490,7 @@ ld_args
 
 ---
 
-# 8. Process every input file
+### 8. Process every input file
 
 ```c
 for (int i = 0; i < input_paths.len; i++) {
@@ -1431,3 +1441,697 @@ main.c
 * `codegen.c` = **AST → x86-64 assembly**
 
 So after understanding this `main.c`, I would **not continue reading `main.c`**. Your next target should be **`run_cc1()` and then `cc1()`**, because those functions provide the bridge from the compiler driver into the actual compiler pipeline. From there, go into `tokenize.c`.
+
+---
+
+## What is AST?
+
+---
+
+**AST** stands for **Abstract Syntax Tree**. It is one of the most important concepts in compiler construction.
+
+In the sentence:
+
+> "`main.c` is not where C source code is parsed into an AST"
+
+it means that `main.c` mainly **controls the compilation process**, while another part of chibicc—primarily `parse.c`—takes the C tokens and builds the AST.
+
+---
+
+# 1. What is an AST?
+
+An AST is a **tree-shaped representation of the structure of a program**.
+
+Consider this C code:
+
+```c
+int x = 10 + 20;
+```
+
+A compiler first sees characters:
+
+```text
+i n t   x   =   1 0   +   2 0   ;
+```
+
+The tokenizer converts them into tokens:
+
+```text
+int
+x
+=
+10
++
+20
+;
+```
+
+Then the parser analyzes the relationship between those tokens and constructs an AST.
+
+Conceptually:
+
+```text
+       declaration
+            │
+       ┌────┴────┐
+       │         │
+      x:int    initializer
+                   │
+                   +
+                 /   \
+               10     20
+```
+
+The important thing is that the AST represents **meaningful syntactic structure**, rather than individual characters.
+
+---
+
+# 2. Why is it called a "tree"?
+
+Because each piece of the program can have children.
+
+For:
+
+```c
+10 + 20
+```
+
+the structure is:
+
+```text
+       +
+      / \
+    10   20
+```
+
+The `+` operation is the parent node.
+
+`10` and `20` are its child nodes.
+
+This is a tree:
+
+```text
+        +
+       / \
+      10  20
+```
+
+For:
+
+```c
+10 + 20 * 3
+```
+
+the AST is:
+
+```text
+          +
+         / \
+       10   *
+           / \
+         20   3
+```
+
+Notice something important.
+
+It is **not**:
+
+```text
+          *
+         / \
+        +   3
+       / \
+     10  20
+```
+
+because multiplication has higher precedence than addition.
+
+Therefore:
+
+```c
+10 + 20 * 3
+```
+
+means:
+
+```text
+10 + (20 * 3)
+```
+
+The AST captures that structure.
+
+---
+
+# 3. AST vs source code
+
+Consider:
+
+```c
+x = 10 + 20;
+```
+
+The source code is just text:
+
+```text
+x = 10 + 20;
+```
+
+The tokenizer produces something like:
+
+```text
+[x] [=] [10] [+] [20] [;]
+```
+
+The parser produces:
+
+```text
+          =
+         / \
+        x   +
+           / \
+         10  20
+```
+
+So the transformation is:
+
+```text
+Source code
+     │
+     ▼
+" x = 10 + 20; "
+     │
+     ▼
+Tokenizer
+     │
+     ▼
+Tokens
+[x] [=] [10] [+] [20] [;]
+     │
+     ▼
+Parser
+     │
+     ▼
+AST
+    =
+   / \
+  x   +
+     / \
+   10  20
+```
+
+---
+
+# 4. What does "abstract" mean?
+
+The word **abstract** is important.
+
+The AST doesn't need to preserve every character from the original source.
+
+For example:
+
+```c
+x = 10 + 20;
+```
+
+contains:
+
+* spaces
+* semicolon
+* exact formatting
+* comments
+* etc.
+
+The AST doesn't need most of that.
+
+It cares about the program's structure:
+
+```text
+assignment
+    │
+    ├── variable x
+    │
+    └── addition
+          ├── 10
+          └── 20
+```
+
+That's why it's an **Abstract** Syntax Tree.
+
+---
+
+# 5. AST in chibicc
+
+This is where `parse.c` becomes very important.
+
+chibicc defines different kinds of AST nodes.
+
+You'll encounter concepts such as:
+
+```text
+ND_ADD
+ND_SUB
+ND_MUL
+ND_DIV
+
+ND_ASSIGN
+
+ND_EQ
+ND_NE
+ND_LT
+ND_LE
+
+ND_IF
+ND_FOR
+ND_WHILE
+
+ND_RETURN
+
+ND_FUNCALL
+ND_VAR
+
+ND_NUM
+```
+
+These represent different kinds of syntax.
+
+For example:
+
+```c
+x + y
+```
+
+might be represented as:
+
+```text
+ND_ADD
+├── lhs → x
+└── rhs → y
+```
+
+And:
+
+```c
+x = 10;
+```
+
+as:
+
+```text
+ND_ASSIGN
+├── lhs → x
+└── rhs → 10
+```
+
+And:
+
+```c
+return x + 1;
+```
+
+as:
+
+```text
+ND_RETURN
+    │
+    ▼
+   ND_ADD
+   /    \
+  x      1
+```
+
+---
+
+# 6. Why does the compiler need an AST?
+
+Because the compiler needs to **understand the program's structure** before generating machine code.
+
+For example:
+
+```c
+int result = (10 + 20) * 3;
+```
+
+The compiler needs to know:
+
+```text
+          *
+         / \
+        +   3
+       / \
+     10   20
+```
+
+Then code generation can produce something conceptually like:
+
+```asm
+mov $10, ...
+add $20, ...
+imul $3, ...
+```
+
+So the AST acts as an intermediate representation between parsing and code generation:
+
+```text
+C source
+   │
+   ▼
+Tokenizer
+   │
+   ▼
+Tokens
+   │
+   ▼
+Parser
+   │
+   ▼
+AST
+   │
+   ▼
+Type analysis
+   │
+   ▼
+Code generation
+   │
+   ▼
+Assembly
+```
+
+---
+
+# 7. AST is not machine code
+
+This distinction is important.
+
+An AST:
+
+```text
+       +
+      / \
+    10   20
+```
+
+does **not** mean:
+
+```text
+add instruction
+```
+
+It means:
+
+> "This program contains an addition operation whose left operand is 10 and whose right operand is 20."
+
+Then `codegen.c` decides how to translate that operation into machine instructions.
+
+For example:
+
+```text
+AST
+
+      +
+     / \
+   10   20
+
+      │
+      ▼
+
+Code generator
+
+      │
+      ▼
+
+Assembly
+```
+
+So:
+
+```text
+AST = representation of program structure
+Assembly = instructions for the CPU
+```
+
+---
+
+# 8. A more realistic example
+
+Consider:
+
+```c
+int main() {
+    int x = 10;
+
+    if (x > 5)
+        return 1;
+
+    return 0;
+}
+```
+
+The AST is conceptually something like:
+
+```text
+Function: main
+│
+└── Body
+    │
+    ├── Variable declaration
+    │     │
+    │     └── x = 10
+    │
+    ├── if
+    │    │
+    │    ├── condition
+    │    │      │
+    │    │      └── x > 5
+    │    │
+    │    └── then
+    │           │
+    │           └── return 1
+    │
+    └── return 0
+```
+
+This is much easier for the compiler to work with than:
+
+```text
+i n t   m a i n ( ) { i n t ...
+```
+
+---
+
+# 9. How this relates to the chibicc files
+
+Now you can see why I recommended studying the files in this order:
+
+```text
+tokenize.c
+     │
+     │ creates
+     ▼
+  Tokens
+     │
+     │ consumed by
+     ▼
+ parse.c
+     │
+     │ creates
+     ▼
+   AST
+     │
+     │ analyzed by
+     ▼
+  type.c
+     │
+     ▼
+Typed AST
+     │
+     │ consumed by
+     ▼
+codegen.c
+     │
+     ▼
+Assembly
+```
+
+In particular:
+
+### `tokenize.c`
+
+Answers:
+
+> "What are the individual pieces of the source code?"
+
+For:
+
+```c
+x + 10
+```
+
+it produces roughly:
+
+```text
+identifier(x)
++
+number(10)
+```
+
+### `parse.c`
+
+Answers:
+
+> "How are these pieces related?"
+
+It produces:
+
+```text
+    +
+   / \
+  x  10
+```
+
+### `type.c`
+
+Answers:
+
+> "What types do these things have?"
+
+For example:
+
+```text
+x → int
+10 → int
+x + 10 → int
+```
+
+### `codegen.c`
+
+Answers:
+
+> "How do I turn this structure into CPU instructions?"
+
+---
+
+## The key idea
+
+When studying chibicc, keep this mental model in your head:
+
+```text
+                 C source
+                    │
+                    ▼
+             ┌─────────────┐
+             │  tokenize.c │
+             └──────┬──────┘
+                    │
+                    ▼
+                  Tokens
+                    │
+                    ▼
+             ┌─────────────┐
+             │   parse.c   │
+             └──────┬──────┘
+                    │
+                    ▼
+                   AST
+                    │
+              ┌─────┴─────┐
+              │           │
+              ▼           ▼
+           type.c      codegen.c
+              │           │
+              ▼           ▼
+          type info     Assembly
+```
+
+So when you see **AST** throughout chibicc, think:
+
+> **"The compiler's structured representation of what the source code means syntactically."**
+
+And when you next study `parse.c`, the most useful thing is to understand **how a sequence of tokens such as `10 + 20 * 3` gets turned into the tree `10 + (20 * 3)`**. That is the point where compiler construction starts becoming much more concrete.
+
+---
+
+## what is atexit()
+
+---
+
+`atexit()` registers a function to run automatically when the program exits normally — either via `return` from `main()` or a call to `exit()`.
+
+It does **not** run on `abort()`, `_exit()`, or a crash (e.g., segfault).
+
+### Signature
+
+```c
+#include <stdlib.h>
+
+int atexit(void (*func)(void));
+```
+
+- Takes a function pointer to a function with no arguments and no return value.
+- Returns `0` on success, nonzero on failure.
+- You can register multiple functions (at least 32 guaranteed by the C standard).
+
+### Multiple handlers — LIFO order
+
+Registered functions run in **reverse order of registration** (last-in, first-out):
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+void cleanup(void) { printf("Cleaning up...\n"); }
+void cleanup2(void) { printf("Cleaning2 up...\n"); }
+void cleanup3(void) { printf("Cleaning3 up...\n"); }
+
+int main(void) {
+  atexit(cleanup);
+  atexit(cleanup2);
+  atexit(cleanup3);
+  printf("Main running...\n");
+  return 0;
+}
+```
+
+```bash
+Main running...
+Cleaning3 up...
+Cleaning2 up...
+Cleaning up...
+```
+
+### Works with `exit()` too
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+void notify(void) { printf("exit handler called\n"); }
+
+void do_work(int fail) {
+  if (fail) {
+    printf("failure detected\n");
+    exit(EXIT_FAILURE);  // triggers atexit handlers
+  }
+}
+
+int main(void) {
+  atexit(notify);
+  do_work(1);
+  printf("this line never runs\n");
+  return 0;
+}
+```
+
+```
+failure detected
+exit handler called
+```
+
+### Common gotchas
+
+- **No arguments allowed.** If you need to pass state, use a global/static variable or a closure-like pattern (C has no closures, so use file-scope statics).
+
+- **Not called on `abort()`/crash.** Don't rely on it for critical cleanup like flushing to disk on a signal — use signal handlers for that.
+
+- **Order matters** if handlers depend on each other's side effects (LIFO, as shown above).
+
+- **`exit()` inside an atexit handler** is undefined/implementation-defined behavior in some standards — avoid calling `exit()` from within a registered function.

@@ -663,6 +663,7 @@ static FileType get_file_type(char* filename) {
 }
 
 int main(int argc, char** argv) {
+  
   atexit(cleanup);
   init_macros();
   parse_args(argc, argv);

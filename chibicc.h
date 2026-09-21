@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
+// provides pathname manipulation functions, such as dirname() and basename(), which are used to extract the directory and filename components from a given file path.
 #include <glob.h>
 #include <libgen.h>
 #include <stdarg.h>
@@ -14,8 +15,11 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+// provides declarations for functions and macros used for process control, specifically for waiting for child processes to terminate. It includes functions like wait(), waitpid(), and macros for interpreting the exit status of child processes.
 #include <sys/wait.h>
+// provides functions and types for manipulating date and time information. It includes functions for getting the current time, converting between different time representations, formatting time as strings, and performing arithmetic on time values.
 #include <time.h>
+// provides access to the POSIX operating system API, including functions for file and directory manipulation, process control, and other system-level operations.
 #include <unistd.h>
 
 #define MAX(x, y) ((x) < (y) ? (y) : (x))
