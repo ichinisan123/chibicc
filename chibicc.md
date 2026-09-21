@@ -47,7 +47,6 @@ char *format(char *fmt, ...);
 ### 4. `MAX` and `MIN` macros
 
 ```c
-// File: chibicc.h
 #define MAX(x, y) ((x) < (y) ? (y) : (x))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 ```
@@ -73,6 +72,55 @@ int y = MAX(x++, 10);  // x may be incremented once or twice
 ```
 
 4. In this macro, the condition evaluates `x++`, and one selected branch can evaluate it again. `chibicc` can safely use the macro when its arguments are ordinary values without side effects.
+
+🟢 When Double Evaluation Occurs
+
+1. If `x` starts at `10`, the condition is false:
+
+```c
+int x = 10;
+int y = MAX(x++, 10);
+```
+
+2. The expansion evaluates `x++` in both the condition and selected branch:
+
+```c
+int y = ((x++) < (10) ? (10) : (x++));
+```
+
+3. The result is `x == 12` and `y == 11`. This is not undefined behavior because evaluation of the condition is sequenced before evaluation of the selected conditional branch.
+
+🟢 Better Explanation
+
+1. The example should avoid claiming that the same fixed execution may arbitrarily increment `x` once or twice. The number of evaluations depends deterministically on the condition.
+
+```c
+int x = 1;
+int y = MAX(x++, 10);  // x++ is evaluated once; x becomes 2
+
+int a = 10;
+int z = MAX(a++, 10);  // a++ is evaluated twice; a becomes 12
+```
+
+2. The precise rule is:
+
+- `MAX(x, y)` evaluates `x` twice when `x < y` is false.
+- `MAX(x, y)` evaluates `y` twice when `x < y` is true.
+- `MIN(x, y)` evaluates `x` twice when `x < y` is true.
+- `MIN(x, y)` evaluates `y` twice when `x < y` is false.
+
+🟢 Corrected Text
+
+1. A more accurate version is:
+
+> These macros can evaluate one argument twice. Therefore, arguments containing increments, assignments, function calls, volatile accesses, or other side effects are unsafe. Which argument is evaluated twice depends on the comparison result.
+
+```c
+int x = 10;
+int y = MAX(x++, 10);  // x++ is evaluated twice
+```
+
+2. For `chibicc`, the macros are safe only when each argument can be evaluated repeatedly without changing program behavior. “Ordinary values without side effects” is broadly correct, but “side-effect-free expressions” is more precise.
 
 ### 5. Compatibility definition for `__attribute__`
 
@@ -102,6 +150,111 @@ format("%d", "text");   // Compiler can diagnose a type mismatch
 ```
 
 5. Defining reserved identifiers such as `__attribute__` is generally not recommended in application code, but it is used here as a small portability mechanism for the compiler project.
+
+🟢 What this code does
+
+```c
+#ifndef __GNUC__
+# define __attribute__(x)
+#endif
+```
+
+This is a portability shim. It lets code sprinkled with GCC's `__attribute__((...))` syntax compile cleanly on non-GCC-compatible compilers, by making the attribute a no-op there.
+
+🟢 Why it's needed
+
+`__attribute__` is a GCC/Clang extension, not standard C. If you compile chibicc's source with, say, MSVC, the parser would choke on `__attribute__((format(printf, 1, 2)))` since MSVC doesn't know that syntax.
+
+`__GNUC__` is a predefined macro that GCC (and GCC-compatible compilers like Clang) always define. So:
+
+```c
+#ifndef __GNUC__
+# define __attribute__(x)
+#endif
+```
+
+reads as: "if we're **not** on a GCC-like compiler, redefine `__attribute__(x)` as an empty macro that swallows its argument and expands to nothing."
+
+🟢 Expansion trace
+
+On GCC/Clang (`__GNUC__` defined): the macro is *not* defined, so `__attribute__((...))` passes through untouched to the compiler's native handling.
+
+On MSVC (`__GNUC__` undefined):
+
+```c
+char *format(char *fmt, ...)
+  __attribute__((format(printf, 1, 2)));
+```
+
+expands to:
+
+```c
+char *format(char *fmt, ...)
+  ;
+```
+
+The attribute vanishes entirely — the declaration survives, just without the extra semantic annotation.
+
+🟢 The `format(printf, 1, 2)` attribute specifically
+
+This tells GCC/Clang: "this function behaves like `printf` — validate the call site against the format string."
+
+- `1` = the position of the format-string parameter (`fmt` is argument 1; note `self`/implicit receiver isn't counted for free functions, but *is* counted as 1 for non-static member-like cases — for a plain function, counting starts at 1).
+- `2` = the position where variadic arguments begin.
+
+```c
+char *format(char *fmt, ...)
+  __attribute__((format(printf, 1, 2)));
+```
+
+Given this, the compiler statically checks every call site:
+
+```c
+format("%d", 42);      // OK — %d expects int, got int
+format("%d", "text");  // warning: format '%d' expects 'int', but argument has type 'char *'
+format("%s %d", "x");  // warning: too few arguments for format
+```
+
+This is purely a diagnostic aid — it costs nothing at runtime and catches a common class of bugs (format string / argument mismatches) at compile time, the same way it does for real `printf`.
+
+🟢 Why chibicc does this at all
+
+chibicc is a C compiler implemented in C, and it wants to:
+
+1. Use GCC-specific diagnostics (like `format`) to keep its own source bug-free when built with GCC/Clang during development.
+
+2. Still be buildable with compilers lacking that extension, without `#ifdef`-guarding every single attribute usage at every call site.
+
+Centralizing the fallback in one macro definition in `chibicc.h` means the rest of the codebase can use `__attribute__(...)` freely without scattering compiler-detection logic everywhere.
+
+🟢 Note on the reserved-identifier caveat (point 5)
+
+Identifiers starting with `__` (double underscore) or `_` followed by a capital letter are **reserved for the implementation** per the C standard (C11 §7.1.3). Application code redefining them is technically undefined behavior / not portable.
+
+```c
+#define __attribute__(x)  // reserved identifier — implementation territory
+```
+
+It's acceptable here specifically because:
+- chibicc *is* a compiler implementation, operating close to that boundary.
+- The macro is a narrowly scoped fallback (empty-expansion only), not a redefinition that changes meaning on compilers where it's already defined.
+- It's guarded by `#ifndef __GNUC__`, so it never conflicts with the real GCC/Clang definition.
+
+In ordinary application code, you'd avoid this and instead do something like:
+
+```c
+#if defined(__GNUC__) || defined(__clang__)
+# define PRINTF_LIKE(fmt_idx, va_idx) __attribute__((format(printf, fmt_idx, va_idx)))
+#else
+# define PRINTF_LIKE(fmt_idx, va_idx)
+#endif
+
+char *format(char *fmt, ...) PRINTF_LIKE(1, 2);
+```
+
+— defining your *own* macro name instead of shadowing the reserved `__attribute__` identifier itself.
+
+---
 
 ### 6. Forward declarations
 
@@ -172,19 +325,273 @@ strarray_push(&arr, "output.o");
 ### 8. Formatted string creation
 
 ```c
-char *format(char *fmt, ...)
-  __attribute__((format(printf, 1, 2)));
+char* format(char* fmt, ...) __attribute__((format(printf, 1, 2)));
 ```
 
-1. `format()` creates a formatted string similarly to `printf()`, but returns the generated character buffer.
+This is a **function declaration** with a **GCC attribute** attached, telling the compiler to type-check calls to `format()` as if it were `printf`.
+
+| Part                                    | Meaning                                                                              |
+|-----------------------------------------|--------------------------------------------------------------------------------------|
+| `char* format(char* fmt, ...)`          | A variadic function — `fmt` is the format string, `...` is the rest of the arguments |
+| `__attribute__((format(printf, 1, 2)))` | GCC extension: validate this function's calls like `printf`                          |
+| `printf`                                | Which format-checking convention to use (`printf`, `scanf`, `strftime`, etc.)        |
+| `1`                                     | Position of the format-string argument (`fmt` is argument #1)                        |
+| `2`                                     | Position where the variadic arguments start (argument #2 onward)                     |
+
+🟢 Why the `1, 2`
+
+Argument positions are 1-indexed, counting from the first parameter:
 
 ```c
-char *path = format("%s/%s", directory, filename);
+char* format(char* fmt, ...);
+//           ^1         ^2 (variadic args start here)
 ```
 
-2. In `chibicc`, this is useful for constructing command-line arguments, temporary filenames, assembler commands, and diagnostic text.
+Compare with a member-like function taking an extra leading argument:
 
-3. The returned buffer is normally dynamically allocated, so callers must follow the project’s ownership conventions.
+```c
+void log_msg(int level, char* fmt, ...) __attribute__((format(printf, 2, 3)));
+//                      ^2  fmt is arg 2, varargs start at arg 3
+```
+
+🟢 What it catches
+
+```c
+#include <stdarg.h>
+#include <stdio.h>
+
+char* format(char* fmt, ...) __attribute__((format(printf, 1, 2)));
+
+char* format(char* fmt, ...) {
+  static char buf[256];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  return buf;
+}
+
+int main(void) {
+  format("%d apples", 5);  // OK
+  format("%s", "hello");   // OK
+  format("%d", "oops");    // warning: format '%d' expects int, got char*
+  format("%d and %d", 1);  // warning: too few arguments for format
+  format("%d", 1, 2);
+  // warning: too many arguments for format (some compilers)
+}
+```
+
+Compile with warnings on:
+
+```sh
+gcc -Wall -Wformat main.c
+```
+
+```
+main.c: In function 'main':
+main.c:16:12: warning: format '%d' expects argument of type 'int', but argument 2 has type 'char *' [-Wformat=]
+main.c:17:5: warning: too few arguments for format [-Wformat=]
+```
+
+🟢 Why this matters
+
+Without the attribute, `format()` is just an ordinary variadic function
+
+the compiler has no idea it's `printf`-like, so mismatched types slip through silently until runtime (often a crash or garbage output).
+
+With the attribute, GCC/Clang statically catches these bugs at compile time, same as it does for the real `printf`.
+
+🟢 Portability note
+
+Since `__attribute__` is GCC/Clang-only, real-world code guards it (as seen in chibicc's `chibicc.h`):
+
+```c
+#ifndef __GNUC__
+# define __attribute__(x)
+#endif
+```
+
+so the declaration still compiles (minus the checking) on compilers like MSVC.
+
+🟢 What `__attribute__` is
+
+A GCC extension for attaching compiler metadata to declarations — functions, variables, types.
+
+Not standard C, but widely used in systems code (Linux kernel, glibc, chibicc, etc.).
+
+Syntax: `__attribute__((attr1, attr2, ...))` — double parens, comma-separated list.
+
+🟢 Common attributes
+
+🟠 `unused` — suppress unused warnings
+
+```c
+void handler(int sig __attribute__((unused))) {
+    // sig intentionally unused
+}
+```
+
+```
+-Wunused-parameter
+```
+
+Useful for callback signatures where you don't need every parameter.
+
+🟠 `noreturn` — function never returns
+
+```c
+void die(const char *msg) __attribute__((noreturn));
+
+void die(const char *msg) {
+    fprintf(stderr, "%s\n", msg);
+    exit(1);
+}
+```
+
+Lets the compiler skip "missing return" warnings and enables better dead-code elimination after calls to `die()`.
+
+🟠 `packed` — remove struct padding
+
+```c
+struct __attribute__((packed)) Header {
+    uint8_t  type;
+    uint32_t length;
+};
+// Without packed: sizeof == 8 (padding after 'type')
+// With packed:    sizeof == 5
+```
+
+Critical for binary protocols / file formats where layout must match a spec exactly.
+
+🟠 `aligned` — force alignment
+
+```c
+int buf[4] __attribute__((aligned(16)));
+```
+
+Common for SIMD (SSE/AVX needs 16/32-byte aligned data).
+
+🟠 `always_inline` — force inlining
+
+```c
+static inline int add(int a, int b) __attribute__((always_inline));
+```
+
+Overrides the compiler's inlining heuristics (`inline` is only a hint; this is closer to a mandate).
+
+🟠 `constructor` / `destructor` — run before/after `main()`
+
+```c
+__attribute__((constructor))
+void init(void) {
+    printf("runs before main\n");
+}
+
+__attribute__((destructor))
+void cleanup(void) {
+    printf("runs after main returns\n");
+}
+
+int main(void) {
+    printf("main\n");
+    return 0;
+}
+```
+
+```
+runs before main
+main
+runs after main returns
+```
+
+Used for library init (e.g., registering plugins at load time).
+
+🟠 `deprecated` — compile-time warning on use
+
+```c
+int old_api(void) __attribute__((deprecated("use new_api() instead")));
+
+int main(void) {
+    old_api();  // warning: 'old_api' is deprecated: use new_api() instead
+}
+```
+
+🟠 `warn_unused_result` — force callers to check return value
+
+```c
+int must_check(void) __attribute__((warn_unused_result));
+
+int main(void) {
+    must_check();  // warning: ignoring return value
+}
+```
+
+glibc uses this on `malloc`-adjacent functions and `write()` to catch silently-dropped errors.
+
+🟠 `weak` — allow symbol override at link time
+
+```c
+void hook(void) __attribute__((weak));
+
+void hook(void) {
+    // default no-op implementation
+}
+```
+
+Another translation unit can define a strong `hook()` that overrides this one — used for optional plugin hooks.
+
+🟠 `section` — place symbol in a custom linker section
+
+```c
+const char version[] __attribute__((section(".version_info"))) = "1.0.0";
+```
+
+Used in embedded/kernel code to control memory layout precisely.
+
+🟠 `cleanup` — RAII-like automatic cleanup (GCC/Clang)
+
+```c
+void free_str(char **p) { free(*p); }
+
+void example(void) {
+    char *buf __attribute__((cleanup(free_str))) = strdup("hello");
+    // buf automatically freed when it goes out of scope
+}
+```
+
+🟢 Combining multiple attributes
+
+```c
+int fast_add(int a, int b) __attribute__((const, always_inline));
+```
+
+`const` here means "pure function with no side effects, return depends only on args" — enables aggressive optimization/CSE.
+
+🟢 Placement matters
+
+```c
+__attribute__((noreturn)) void die(void);   // before declaration — applies to function
+void die(void) __attribute__((noreturn));   // after declaration — also valid, more common
+```
+
+Both are accepted; placement after the declarator is the conventional style (matches the `format` example from chibicc).
+
+🟢 Portability pattern (recap)
+
+```c
+#if defined(__GNUC__) || defined(__clang__)
+# define NORETURN __attribute__((noreturn))
+#else
+# define NORETURN
+#endif
+
+NORETURN void die(const char *msg);
+```
+
+Wrapping each attribute in its own macro (rather than blanket no-op'ing `__attribute__` itself) is the more disciplined approach for portable libraries — chibicc's simpler `#define __attribute__(x)` works because chibicc doesn't need MSVC support to *behave* correctly, only to *compile*.
+
+
+---
 
 ### 9. Token kinds
 
