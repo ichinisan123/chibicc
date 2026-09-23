@@ -4,6 +4,7 @@
 
 [GeminiFlash38]
 
+
 ### 1. Recommended Study Order
 
 #### 1-1. Entry Point and Pipeline Overview

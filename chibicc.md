@@ -759,9 +759,9 @@ contents: "int answer = 42;\n"
 
 2. Conceptually, the displayed line is calculated using an adjustment similar to:
 
-[
+$$
 \text{displayed line} = \text{physical line} + \text{line delta}
-]
+$$
 
 ### 11. Token structure
 
