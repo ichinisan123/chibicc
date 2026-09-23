@@ -679,6 +679,7 @@ int main(int argc, char** argv) {
 
   StringArray ld_args = {};
 
+  
   for (int i = 0; i < input_paths.len; i++) {
     char* input = input_paths.data[i];
 

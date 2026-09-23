@@ -2135,3 +2135,906 @@ exit handler called
 - **Order matters** if handlers depend on each other's side effects (LIFO, as shown above).
 
 - **`exit()` inside an atexit handler** is undefined/implementation-defined behavior in some standards — avoid calling `exit()` from within a registered function.
+
+---
+
+## parse_args()
+
+---
+
+### 1. Purpose of `parse_args()`
+
+1. `parse_args()` interprets the compiler command line and stores the results in global option variables and dynamic string arrays.
+
+2. In chibicc, the executable acts as both a compiler driver and an internal compiler process, so this function handles preprocessing, compilation, assembly, linking, and internal `-cc1` options.
+
+3. For a command such as:
+
+```bash
+chibicc -Iinclude -DDEBUG -c main.c -o main.o
+```
+
+the function approximately produces:
+
+```text
+include_paths = ["include"]
+input_paths   = ["main.c"]
+opt_c         = true
+opt_o         = "main.o"
+macro DEBUG   = defined
+```
+
+### 2. Function parameters
+
+```c
+static void parse_args(int argc, char **argv)
+```
+
+1. `argc` is the number of command-line arguments.
+2. `argv` is an array of argument strings, and the C runtime guarantees that `argv[argc]` is a null pointer.
+3. `argv[0]` is the executable name, so both loops begin at index `1`.
+
+### 3. First pass: validating options with operands
+
+```c
+for (int i = 1; i < argc; i++)
+  if (take_arg(argv[i]))
+    if (!argv[++i])
+      usage(1);
+```
+
+1. The first pass verifies that every option requiring a following argument actually has one.
+
+2. `take_arg()` identifies separate-argument options such as `-o`, `-D`, `-U`, `-include`, `-x`, `-MF`, `-MT`, `-MQ`, `-Xlinker`, and `-L`.
+
+3. When such an option is found, `++i` moves to its operand; that operand is skipped as an option during this validation pass.
+
+4. If the option is the last command-line argument, `argv[++i]` evaluates to `argv[argc]`, which is guaranteed to be `NULL`, and `usage(1)` terminates with an error.
+
+For example:
+
+```bash
+chibicc -o
+```
+
+is rejected because `-o` has no output filename.
+
+The double `if` is equivalent to:
+
+```c
+for (int i = 1; i < argc; i++) {
+  if (take_arg(argv[i])) {
+    i++;
+
+    if (argv[i] == NULL)
+      usage(1);
+  }
+}
+```
+
+### 4. Delayed `-idirafter` paths
+
+```c
+StringArray idirafter = {};
+```
+
+1. `idirafter` temporarily stores include directories supplied by `-idirafter`.
+2. These directories must be searched after ordinary `-I` directories, so they are not immediately inserted into `include_paths`.
+3. `{}` zero-initializes the structure in chibicc’s build environment; `{0}` is the conventional form for older C standards.
+
+Conceptually, `StringArray` contains fields similar to:
+
+```c
+typedef struct {
+  char **data;
+  int capacity;
+  int len;
+} StringArray;
+```
+
+### 5. Main parsing loop
+
+```c
+for (int i = 1; i < argc; i++) {
+  // Interpret argv[i].
+}
+```
+
+1. The second pass performs the actual parsing.
+2. Each recognized option updates a global variable or appends a value to an array.
+3. Nearly every recognized branch ends with `continue`, ensuring that the argument is not later mistaken for an input filename.
+4. Options with separate operands increment `i` so the outer loop does not process the operand again.
+
+### 6. Driver and internal compiler options
+
+#### 6-1. `-###`
+
+```c
+if (!strcmp(argv[i], "-###")) {
+  opt_hash_hash_hash = true;
+  continue;
+}
+```
+
+1. `-###` asks the compiler driver to print the external commands it would execute.
+2. The associated global flag is later checked when invoking the assembler, linker, or internal compiler stage.
+
+#### 6-2. `-cc1`
+
+```c
+if (!strcmp(argv[i], "-cc1")) {
+  opt_cc1 = true;
+  continue;
+}
+```
+
+1. `-cc1` selects chibicc’s internal compiler mode.
+2. The driver can launch another chibicc process with `-cc1` to perform the actual preprocessing and C-to-assembly compilation.
+
+#### 6-3. Internal input and output names
+
+```c
+if (!strcmp(argv[i], "-cc1-input")) {
+  base_file = argv[++i];
+  continue;
+}
+
+if (!strcmp(argv[i], "-cc1-output")) {
+  output_file = argv[++i];
+  continue;
+}
+```
+
+1. `-cc1-input` specifies the source file used by the internal compiler stage.
+2. `-cc1-output` specifies where that stage writes its result.
+3. These are internal communication options rather than normal user-facing compiler options.
+
+### 7. General output and compilation-stage options
+
+#### 7-1. Help
+
+```c
+if (!strcmp(argv[i], "--help"))
+  usage(0);
+```
+
+1. `usage(0)` prints usage information and exits successfully.
+2. A nonzero argument, such as `usage(1)`, conventionally indicates an error.
+
+#### 7-2. Output filename
+
+```c
+if (!strcmp(argv[i], "-o")) {
+  opt_o = argv[++i];
+  continue;
+}
+
+if (!strncmp(argv[i], "-o", 2)) {
+  opt_o = argv[i] + 2;
+  continue;
+}
+```
+
+1. The first branch accepts a separate argument:
+
+```bash
+chibicc -o output main.c
+```
+
+2. The second branch accepts the attached form:
+
+```bash
+chibicc -ooutput main.c
+```
+
+3. `argv[i] + 2` points immediately after the two characters `-o`.
+4. The exact `-o` test must appear before the prefix test; otherwise bare `-o` would produce an empty filename.
+
+#### 7-3. Stop-after-stage options
+
+```c
+if (!strcmp(argv[i], "-S")) {
+  opt_S = true;
+  continue;
+}
+
+if (!strcmp(argv[i], "-c")) {
+  opt_c = true;
+  continue;
+}
+
+if (!strcmp(argv[i], "-E")) {
+  opt_E = true;
+  continue;
+}
+```
+
+1. `-E` stops after preprocessing.
+2. `-S` stops after generating assembly.
+3. `-c` stops after generating an object file.
+4. Without these options, the driver normally continues through linking.
+
+The pipeline is approximately:
+
+```text
+source.c
+   |
+   | preprocessing
+   v
+preprocessed C
+   |
+   | compilation
+   v
+assembly
+   |
+   | assembly
+   v
+object file
+   |
+   | linking
+   v
+executable or shared object
+```
+
+### 8. Common-symbol behavior
+
+```c
+if (!strcmp(argv[i], "-fcommon")) {
+  opt_fcommon = true;
+  continue;
+}
+
+if (!strcmp(argv[i], "-fno-common")) {
+  opt_fcommon = false;
+  continue;
+}
+```
+
+1. These options control the treatment of tentative global definitions such as:
+
+```c
+int value;
+```
+
+2. With `-fcommon`, multiple tentative definitions can be emitted as common symbols and combined by the linker.
+3. With `-fno-common`, the compiler emits ordinary definitions, allowing the linker to diagnose duplicate definitions more strictly.
+4. Since arguments are processed from left to right, the last occurrence wins:
+
+```bash
+chibicc -fcommon -fno-common main.c
+```
+
+results in `opt_fcommon == false`.
+
+### 9. Include-path handling
+
+#### 9-1. `-I`
+
+```c
+if (!strncmp(argv[i], "-I", 2)) {
+  strarray_push(&include_paths, argv[i] + 2);
+  continue;
+}
+```
+
+1. This branch recognizes attached include paths such as:
+
+```bash
+chibicc -Iinclude main.c
+```
+
+2. `argv[i] + 2` points to `"include"`.
+3. The path is appended to `include_paths`, which the preprocessor later searches for headers.
+
+For example:
+
+```text
+argv[i]     -> "-Iinclude"
+argv[i] + 2 ->   "include"
+```
+
+This particular branch does not independently handle the separate form `-I include`; support for that form depends on the surrounding chibicc version and its option-validation logic.
+
+#### 9-2. `-include`
+
+```c
+if (!strcmp(argv[i], "-include")) {
+  strarray_push(&opt_include, argv[++i]);
+  continue;
+}
+```
+
+1. `-include file.h` makes the preprocessor process `file.h` before the main source file.
+2. Multiple occurrences are preserved in command-line order.
+
+Example:
+
+```bash
+chibicc -include config.h -include platform.h main.c
+```
+
+produces approximately:
+
+```text
+opt_include = ["config.h", "platform.h"]
+```
+
+#### 9-3. `-idirafter`
+
+The pasted code contains:
+
+```c
+if (!strcmp(argv[i], "-idirafter")) {
+  strarray_push(&idirafter, argv[i++]);
+  continue;
+}
+```
+
+1. As written, this appends the literal string `"-idirafter"` rather than the following directory.
+2. The post-increment moves `i` to the directory, and then the `for` loop increments it again, so the directory is skipped.
+3. The intended implementation should normally be:
+
+```c
+if (!strcmp(argv[i], "-idirafter")) {
+  strarray_push(&idirafter, argv[++i]);
+  continue;
+}
+```
+
+For:
+
+```bash
+chibicc -idirafter /opt/sdk/include main.c
+```
+
+the corrected code stores:
+
+```text
+idirafter = ["/opt/sdk/include"]
+```
+
+The original chibicc source/version should be checked because `argv[i++]` at this location is behaviorally inconsistent with the purpose of the option.
+
+### 10. Macro definitions and undefinitions
+
+#### 10-1. `-D`
+
+```c
+if (!strcmp(argv[i], "-D")) {
+  define(argv[++i]);
+  continue;
+}
+
+if (!strncmp(argv[i], "-D", 2)) {
+  define(argv[i] + 2);
+  continue;
+}
+```
+
+1. Both separate and attached forms are supported:
+
+```bash
+chibicc -D DEBUG main.c
+chibicc -DDEBUG main.c
+chibicc -DVERSION=3 main.c
+```
+
+2. `define()` interprets the text as a macro definition.
+3. A definition without `=` is typically treated as if its replacement value were `1`.
+
+Conceptually:
+
+```text
+-DDEBUG       -> #define DEBUG 1
+-DVERSION=3   -> #define VERSION 3
+```
+
+#### 10-2. `-U`
+
+```c
+if (!strcmp(argv[i], "-U")) {
+  undef_macro(argv[++i]);
+  continue;
+}
+
+if (!strncmp(argv[i], "-U", 2)) {
+  undef_macro(argv[i] + 2);
+  continue;
+}
+```
+
+1. `-U` removes a macro definition.
+2. It also accepts separate and attached forms:
+
+```bash
+chibicc -U DEBUG main.c
+chibicc -UDEBUG main.c
+```
+
+3. Option ordering matters:
+
+```bash
+chibicc -DDEBUG -UDEBUG main.c
+```
+
+leaves `DEBUG` undefined.
+
+### 11. Input-language selection with `-x`
+
+```c
+if (!strcmp(argv[i], "-x")) {
+  opt_x = parse_opt_x(argv[++i]);
+  continue;
+}
+
+if (!strncmp(argv[i], "-x", 2)) {
+  opt_x = parse_opt_x(argv[i] + 2);
+  continue;
+}
+```
+
+1. `-x` explicitly specifies the input language instead of relying on the filename extension.
+2. Both forms are accepted:
+
+```bash
+chibicc -x c source
+chibicc -xc source
+```
+
+3. `parse_opt_x()` converts the textual language name into an internal file-type value such as `FILE_C`.
+4. This is useful for extensionless files or standard input.
+
+### 12. Linker inputs and options
+
+#### 12-1. Libraries and comma-separated linker options
+
+```c
+if (!strncmp(argv[i], "-l", 2) ||
+    !strncmp(argv[i], "-Wl,", 4)) {
+  strarray_push(&input_paths, argv[i]);
+  continue;
+}
+```
+
+1. `-lfoo` asks the linker to search for library `foo`.
+2. `-Wl,...` forwards comma-separated arguments to the linker.
+3. They are placed in `input_paths` because linker argument ordering can be significant.
+
+Examples:
+
+```bash
+chibicc main.c -lm
+chibicc main.c -Wl,--as-needed
+```
+
+Keeping `-lm` among the ordered inputs matters because static-library resolution is generally left-to-right.
+
+#### 12-2. `-Xlinker`
+
+```c
+if (!strcmp(argv[i], "-Xlinker")) {
+  strarray_push(&ld_extra_args, argv[++i]);
+  continue;
+}
+```
+
+1. `-Xlinker ARG` forwards exactly one following argument to the linker.
+2. Unlike `-Wl,a,b`, it does not split a comma-separated list.
+
+#### 12-3. Strip symbols
+
+```c
+if (!strcmp(argv[i], "-s")) {
+  strarray_push(&ld_extra_args, "-s");
+  continue;
+}
+```
+
+1. `-s` is forwarded to the linker.
+2. It requests removal of symbol information from the resulting binary.
+
+#### 12-4. Static linking
+
+```c
+if (!strcmp(argv[i], "-static")) {
+  opt_static = true;
+  strarray_push(&ld_extra_args, "-static");
+  continue;
+}
+```
+
+1. `opt_static` records the mode for chibicc’s own driver logic.
+2. The same option is also forwarded to the linker.
+3. Static linking attempts to use static libraries instead of runtime shared libraries.
+
+#### 12-5. Shared-library output
+
+```c
+if (!strcmp(argv[i], "-shared")) {
+  opt_shared = true;
+  strarray_push(&ld_extra_args, "-shared");
+  continue;
+}
+```
+
+1. `-shared` requests a shared object rather than a normal executable.
+2. The flag is both stored internally and forwarded to the linker.
+
+#### 12-6. Library search directories
+
+```c
+if (!strcmp(argv[i], "-L")) {
+  strarray_push(&ld_extra_args, "-L");
+  strarray_push(&ld_extra_args, argv[++i]);
+  continue;
+}
+
+if (!strncmp(argv[i], "-L", 2)) {
+  strarray_push(&ld_extra_args, "-L");
+  strarray_push(&ld_extra_args, argv[i] + 2);
+  continue;
+}
+```
+
+1. Both `-L path` and `-Lpath` are accepted.
+2. chibicc normalizes both forms into two linker arguments:
+
+```text
+"-L"
+"path"
+```
+
+For example:
+
+```bash
+chibicc main.c -L/usr/local/lib -lfoo
+```
+
+adds approximately:
+
+```text
+ld_extra_args = ["-L", "/usr/local/lib"]
+input_paths    = ["main.c", "-lfoo"]
+```
+
+### 13. Dependency-generation options
+
+#### 13-1. `-M`
+
+```c
+if (!strcmp(argv[i], "-M")) {
+  opt_M = true;
+  continue;
+}
+```
+
+1. `-M` requests Makefile-style dependency output.
+2. The generated rule lists headers on which the source file depends.
+
+Example output:
+
+```makefile
+main.o: main.c config.h common.h
+```
+
+#### 13-2. `-MF`
+
+```c
+if (!strcmp(argv[i], "-MF")) {
+  opt_MF = argv[++i];
+  continue;
+}
+```
+
+1. `-MF file` chooses the destination for dependency output.
+2. Without it, dependencies may be written to standard output or a derived `.d` filename, depending on the active dependency mode.
+
+#### 13-3. `-MP`
+
+```c
+if (!strcmp(argv[i], "-MP")) {
+  opt_MP = true;
+  continue;
+}
+```
+
+1. `-MP` adds dummy targets for headers.
+2. This prevents `make` from failing immediately if a previously included header is later deleted.
+
+Example:
+
+```makefile
+main.o: main.c config.h
+
+config.h:
+```
+
+#### 13-4. `-MT`
+
+```c
+if (!strcmp(argv[i], "-MT")) {
+  if (opt_MT == NULL)
+    opt_MT = argv[++i];
+  else
+    opt_MT = format("%s %s", opt_MT, argv[++i]);
+  continue;
+}
+```
+
+1. `-MT target` explicitly sets the target appearing on the left side of the dependency rule.
+2. Repeated `-MT` options are concatenated with spaces.
+3. Only one `argv[++i]` expression is executed because only one branch of the `if` statement runs.
+
+For:
+
+```bash
+chibicc -M -MT main.o -MT backup.o main.c
+```
+
+the result is approximately:
+
+```text
+opt_MT = "main.o backup.o"
+```
+
+#### 13-5. `-MQ`
+
+```c
+if (!strcmp(argv[i], "-MQ")) {
+  if (opt_MT == NULL)
+    opt_MT = quote_makefile(argv[++i]);
+  else
+    opt_MT = format("%s %s", opt_MT,
+                    quote_makefile(argv[++i]));
+  continue;
+}
+```
+
+1. `-MQ` serves the same basic purpose as `-MT`.
+2. `quote_makefile()` escapes characters that have special meaning in Makefile syntax, particularly `$`.
+3. Repeated `-MT` and `-MQ` options contribute to the same target string.
+
+#### 13-6. `-MD` and `-MMD`
+
+```c
+if (!strcmp(argv[i], "-MD")) {
+  opt_MD = true;
+  continue;
+}
+
+if (!strcmp(argv[i], "-MMD")) {
+  opt_MD = opt_MMD = true;
+  continue;
+}
+```
+
+1. `-MD` generates dependency information while continuing normal compilation.
+2. `-MMD` does the same but typically excludes system headers.
+3. The chained assignment sets both flags to `true`:
+
+```c
+opt_MMD = true;
+opt_MD = opt_MMD;
+```
+
+### 14. Position-independent code
+
+```c
+if (!strcmp(argv[i], "-fpic") ||
+    !strcmp(argv[i], "-fPIC")) {
+  opt_fpic = true;
+  continue;
+}
+```
+
+1. Both common spellings enable position-independent code generation.
+2. Position-independent code avoids embedding fixed absolute addresses and is normally required for shared libraries.
+3. chibicc treats `-fpic` and `-fPIC` identically here, even though some architectures distinguish their address-range assumptions.
+
+### 15. Internal hash-map test
+
+```c
+if (!strcmp(argv[i], "-hashmap-test")) {
+  hashmap_test();
+  exit(0);
+}
+```
+
+1. This is a project-specific self-test option.
+2. It runs tests for chibicc’s hash-map implementation and exits without compiling any source file.
+3. Because `exit(0)` terminates immediately, the later “no input files” check is never reached.
+
+### 16. Accepted but ignored compatibility options
+
+```c
+if (!strncmp(argv[i], "-O", 2) ||
+    !strncmp(argv[i], "-W", 2) ||
+    !strncmp(argv[i], "-g", 2) ||
+    !strncmp(argv[i], "-std=", 5) ||
+    !strcmp(argv[i], "-ffreestanding") ||
+    !strcmp(argv[i], "-fno-builtin") ||
+    !strcmp(argv[i], "-fno-omit-frame-pointer") ||
+    !strcmp(argv[i], "-fno-stack-protector") ||
+    !strcmp(argv[i], "-fno-strict-aliasing") ||
+    !strcmp(argv[i], "-m64") ||
+    !strcmp(argv[i], "-mno-red-zone") ||
+    !strcmp(argv[i], "-w"))
+  continue;
+```
+
+1. These options are recognized so that build systems written for GCC or Clang can invoke chibicc without immediately failing.
+2. They currently have no effect in this parser.
+3. Prefix checks accept whole option families:
+
+```text
+-O0, -O1, -O2, -Os
+-Wall, -Wextra, -Werror
+-g, -g3, -gdwarf
+```
+
+4. Broad prefix matching also accepts unknown variants beginning with those prefixes, so this is intentionally permissive rather than strict validation.
+
+### 17. Unknown-option detection
+
+```c
+if (argv[i][0] == '-' && argv[i][1] != '\0')
+  error("unknown argument: %s", argv[i]);
+```
+
+1. Any remaining argument beginning with `-` is considered an unsupported option.
+2. A single `"-"` is excluded because `argv[i][1] == '\0'`; it may represent standard input.
+3. This check occurs only after all supported and intentionally ignored options have been tested.
+
+Example:
+
+```bash
+chibicc --unknown main.c
+```
+
+produces an error similar to:
+
+```text
+unknown argument: --unknown
+```
+
+### 18. Collecting input files
+
+```c
+strarray_push(&input_paths, argv[i]);
+```
+
+1. Any remaining non-option argument is treated as an input.
+2. Inputs can include C source files, assembly files, object files, archives, and possibly `"-"` for standard input.
+3. Their order is preserved because link order can affect the final result.
+
+Example:
+
+```bash
+chibicc main.c helper.o libutil.a -lm
+```
+
+produces an ordered input list similar to:
+
+```text
+["main.c", "helper.o", "libutil.a", "-lm"]
+```
+
+### 19. Appending `-idirafter` directories
+
+```c
+for (int i = 0; i < idirafter.len; i++)
+  strarray_push(&include_paths, idirafter.data[i]);
+```
+
+1. After all arguments have been parsed, delayed directories are appended to `include_paths`.
+2. This ensures that normal `-I` directories precede `-idirafter` directories in the search order.
+
+For a corrected parser:
+
+```bash
+chibicc -idirafter late -Iearly main.c
+```
+
+the resulting order is:
+
+```text
+include_paths = ["early", "late"]
+```
+
+This remains true even though `-idirafter late` appeared first on the command line.
+
+### 20. Requiring at least one input
+
+```c
+if (input_paths.len == 0)
+  error("no input files");
+```
+
+1. Normal compilation requires at least one source, object, library, or other linker input.
+2. Options such as `--help` and `-hashmap-test` exit earlier, so they do not trigger this check.
+
+### 21. Special treatment of `-E`
+
+```c
+if (opt_E)
+  opt_x = FILE_C;
+```
+
+1. `-E` forces the input to be treated as C preprocessing input.
+2. This is especially relevant for extensionless files or standard input.
+3. It prevents the driver from rejecting an input merely because its filename does not have a recognized C extension.
+
+Example:
+
+```bash
+chibicc -E source_without_extension
+```
+
+is treated as C preprocessor input.
+
+### 22. Why the parser uses two passes
+
+1. The validation pass detects missing operands before the parser performs side effects such as defining macros or changing global flags.
+2. The parsing pass can then safely use expressions such as `argv[++i]`, assuming `take_arg()` correctly identifies every separate-argument option.
+3. This design introduces an important invariant: every option consumed with `argv[++i]` in the second pass must also be recognized by `take_arg()`.
+4. If that invariant is violated, a trailing option could read `argv[argc]` as though it were a valid string.
+
+Conceptually:
+
+```text
+Pass 1:
+    Validate option structure.
+
+Pass 2:
+    Apply options and collect inputs.
+
+Finalization:
+    Append delayed include paths.
+    Check for inputs.
+    Apply implied option behavior.
+```
+
+### 23. Important implementation details
+
+1. `strcmp(a, b) == 0` means the two complete strings are equal.
+2. `strncmp(a, prefix, n) == 0` checks only the first `n` characters and is used for attached options.
+3. Expressions such as `argv[i] + 2` do not allocate or copy a string; they create a pointer into the existing argument string.
+4. Therefore, values such as `opt_o`, `base_file`, and attached option operands remain valid because the `argv` strings remain available for the lifetime of the process.
+5. `strarray_push()` stores strings in a dynamically growing array.
+6. `format()` returns a newly formatted string and is used when multiple dependency targets must be combined.
+7. The parser is order-sensitive: later scalar options overwrite earlier values, while array-valued options accumulate entries.
+
+### 24. Simplified behavior summary
+
+| Option          | Stored result                | Purpose                                  |
+|-----------------|------------------------------|------------------------------------------|
+| `-E`            | `opt_E`                      | Preprocess only                          |
+| `-S`            | `opt_S`                      | Generate assembly only                   |
+| `-c`            | `opt_c`                      | Generate object file only                |
+| `-o file`       | `opt_o`                      | Set output filename                      |
+| `-Ipath`        | `include_paths`              | Add header search directory              |
+| `-Dname`        | Macro table                  | Define macro                             |
+| `-Uname`        | Macro table                  | Undefine macro                           |
+| `-include file` | `opt_include`                | Force-include header                     |
+| `-x c`          | `opt_x`                      | Select input language                    |
+| `-Lpath`        | `ld_extra_args`              | Add library search directory             |
+| `-lfoo`         | `input_paths`                | Link library `foo`                       |
+| `-static`       | `opt_static` and linker args | Request static linking                   |
+| `-shared`       | `opt_shared` and linker args | Build shared object                      |
+| `-fPIC`         | `opt_fpic`                   | Generate position-independent code       |
+| `-M`            | `opt_M`                      | Emit dependencies                        |
+| `-MD`           | `opt_MD`                     | Compile and emit dependencies            |
+| `-MMD`          | `opt_MD`, `opt_MMD`          | Exclude system headers from dependencies |
+| `-MF file`      | `opt_MF`                     | Set dependency output file               |
+| `-MT target`    | `opt_MT`                     | Set dependency target                    |
+| `-MQ target`    | `opt_MT`                     | Set and quote dependency target          |
+| `-MP`           | `opt_MP`                     | Add dummy header targets                 |
+| `-cc1`          | `opt_cc1`                    | Enter internal compiler mode             |
+| `-###`          | `opt_hash_hash_hash`         | Print driver commands                    |
+
+### 25. Central interpretation
+
+1. This function does not perform compilation itself; it converts textual command-line arguments into structured compiler state.
+2. The rest of chibicc reads that state to decide which pipeline stages to run and which arguments to pass to the preprocessor, compiler, assembler, and linker.
+3. Its most important design properties are left-to-right processing, preservation of linker-input order, delayed handling of `-idirafter`, and compatibility with a useful subset of GCC-style options.
+4. The `argv[i++]` expression in the pasted `-idirafter` branch is the notable inconsistency and should be `argv[++i]` if the intention is to record the directory following the option.
