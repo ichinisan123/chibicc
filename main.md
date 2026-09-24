@@ -2144,11 +2144,13 @@ exit handler called
 
 ### 1. Purpose of `parse_args()`
 
-1. `parse_args()` interprets the compiler command line and stores the results in global option variables and dynamic string arrays.
+- 1. `parse_args()`
+- interprets the compiler command line and
+- stores the results in global option variables and dynamic string arrays.
 
-2. In chibicc, the executable acts as both a compiler driver and an internal compiler process, so this function handles preprocessing, compilation, assembly, linking, and internal `-cc1` options.
+- 2. In chibicc, the executable acts as both a compiler driver and an internal compiler process, so this function handles preprocessing, compilation, assembly, linking, and internal `-cc1` options.
 
-3. For a command such as:
+- 3. For a command such as:
 
 ```bash
 chibicc -Iinclude -DDEBUG -c main.c -o main.o
@@ -2171,7 +2173,9 @@ static void parse_args(int argc, char **argv)
 ```
 
 1. `argc` is the number of command-line arguments.
+
 2. `argv` is an array of argument strings, and the C runtime guarantees that `argv[argc]` is a null pointer.
+
 3. `argv[0]` is the executable name, so both loops begin at index `1`.
 
 ### 3. First pass: validating options with operands
@@ -2219,7 +2223,9 @@ StringArray idirafter = {};
 ```
 
 1. `idirafter` temporarily stores include directories supplied by `-idirafter`.
+
 2. These directories must be searched after ordinary `-I` directories, so they are not immediately inserted into `include_paths`.
+
 3. `{}` zero-initializes the structure in chibicc’s build environment; `{0}` is the conventional form for older C standards.
 
 Conceptually, `StringArray` contains fields similar to:
@@ -2241,8 +2247,11 @@ for (int i = 1; i < argc; i++) {
 ```
 
 1. The second pass performs the actual parsing.
+
 2. Each recognized option updates a global variable or appends a value to an array.
+
 3. Nearly every recognized branch ends with `continue`, ensuring that the argument is not later mistaken for an input filename.
+
 4. Options with separate operands increment `i` so the outer loop does not process the operand again.
 
 ### 6. Driver and internal compiler options

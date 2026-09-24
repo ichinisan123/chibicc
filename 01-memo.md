@@ -2,6 +2,12 @@
 
 ## to understand code of chibicc
 
+[#### what is "-idirafter" flag in GCC with examples](#what-is--idirafter-flag-in-gcc-with-examples)
+
+---
+
+## to understand code of chibicc
+
 [GeminiFlash38]
 
 
@@ -751,3 +757,42 @@ static void gen_expr(Node *node) {
   #### 6-4. Reading discipline
   1. Do not read `parse.c` linearly from line 1; jump from a grammar function to its callees.
   2. Keep `chibicc.h` enumerations `TokenKind` and `NodeKind` open while reading any `.c` file.
+
+---
+
+## what is "-idirafter" flag in GCC with examples.
+
+---
+
+`-idirafter <dir>` adds `<dir>` to the **end** of the include search path, searched only *after* all normal `-I` dirs and the standard system include paths have been checked and failed.
+
+Contrast with `-I` (searched first, in given order) and `-isystem` (searched after `-I` but before standard system dirs).
+
+**Search order:**
+
+```
+-I dirs → -isystem dirs → standard system dirs → -idirafter dirs
+```
+
+**Use case:** override/supplement system headers without shadowing them — e.g. providing fallback headers only used when the real header is missing.
+
+```bash
+gcc -idirafter /opt/fallback/include -c foo.c
+```
+
+Example: cross-compiling and you have stub headers for functions the target libc lacks, but you still want the real system headers to take priority when they exist:
+
+```
+/opt/fallback/include/stdint_missing.h   # fallback only
+/usr/include/stdint.h                     # real header, found first
+```
+
+```bash
+gcc -idirafter /opt/fallback/include -I./include -c build.c
+```
+
+If `foo.h` exists in both `./include` and `/opt/fallback/include`, the one in `./include` wins because `-I` is searched first; `-idirafter` only kicks in when no earlier directory has the file.
+
+**Quoting `#include` behavior:** applies to both `#include <...>` and `#include "..."` the same as other `-I`-family flags — it only affects search order, not quote-vs-angle-bracket semantics.
+
+---
